@@ -5,30 +5,34 @@ const CHECKABLE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cj
 
 export interface SyntaxCheckResult {
   valid: boolean;
-  skipped: boolean;  // true when the file type isn't checkable or typescript isn't available
+  skipped: boolean;
+  // Distinguishes why the check was skipped — callers use this to decide
+  // whether to emit "provisional" (typescript-unavailable) vs. treat as not applicable.
+  skipReason?: "unsupported-extension" | "typescript-unavailable" | "file-unreadable";
   error?: string;
 }
 
 export async function checkSyntax(filePath: string): Promise<SyntaxCheckResult> {
   const ext = extname(filePath);
   if (!CHECKABLE_EXTENSIONS.has(ext)) {
-    return { valid: true, skipped: true };
+    return { valid: true, skipped: true, skipReason: "unsupported-extension" };
   }
 
   let content: string;
   try {
     content = readFileSync(filePath, "utf8");
   } catch {
-    return { valid: false, skipped: false, error: "Could not read file" };
+    return { valid: false, skipped: false, skipReason: "file-unreadable", error: "Could not read file" };
   }
 
-  // TypeScript is an optional peer dependency. If absent, skip the check.
+  // TypeScript is an optional peer dependency. If absent, skip — but callers must not
+  // treat this as "verified"; they should emit "provisional" instead.
   let ts: typeof import("typescript");
   try {
     const mod = await import("typescript");
     ts = (mod.default ?? mod) as typeof import("typescript");
   } catch {
-    return { valid: true, skipped: true };
+    return { valid: true, skipped: true, skipReason: "typescript-unavailable" };
   }
 
   return checkWithTypeScript(ts, filePath, content, ext);
