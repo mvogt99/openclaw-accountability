@@ -39,12 +39,18 @@ export function createAfterToolCallHandler(config: AccountabilityConfig, logger:
     const runId = ctx.runId ?? event.runId;
 
     // apply_patch can touch multiple files — emit one result per file.
-    const filePaths = event.toolName === "apply_patch"
-      ? extractPatchFilePaths(event.params)
-      : (() => { const p = extractFilePath(event.toolName, event.params, config.watchBash); return p ? [p] : []; })();
+    const entries: Array<{ path: string; operation: "write" | "delete" }> =
+      event.toolName === "apply_patch"
+        ? extractPatchEntries(event.params)
+        : (() => {
+            const p = extractFilePath(event.toolName, event.params, config.watchBash);
+            return p ? [{ path: p, operation: "write" as const }] : [];
+          })();
 
-    for (const filePath of filePaths) {
-      const result = await verifyFile(filePath, event.toolName, sessionKey, runId, config);
+    for (const { path: filePath, operation } of entries) {
+      const result = operation === "delete"
+        ? verifyDeletion(filePath, event.toolName, sessionKey, runId)
+        : await verifyFile(filePath, event.toolName, sessionKey, runId, config);
       logger.info(`accountability:verification_result ${JSON.stringify(result)}`);
       await updateFtalConfidence(sessionKey, runId, result.confidence);
     }
@@ -137,29 +143,74 @@ export function extractFilePath(
   return undefined;
 }
 
-// Extract all file paths touched by an apply_patch call.
-// Parses unified-diff headers from params.patch or params.content.
-export function extractPatchFilePaths(params: Record<string, unknown>): string[] {
+// Verify that a file was intentionally deleted: non-existence is the expected outcome.
+function verifyDeletion(
+  filePath: string,
+  toolName: string,
+  sessionKey: string | undefined,
+  runId: string | undefined,
+): VerificationResult {
+  const stillExists = fileExists(filePath);
+  return {
+    toolName,
+    path: filePath,
+    operation: "delete",
+    exists: stillExists,
+    // Deletion verified = file is gone. Refuted = file still exists (deletion may have failed).
+    confidence: stillExists ? "refuted" : "verified",
+    sessionKey,
+    runId,
+    checkedAt: Date.now(),
+  };
+}
+
+// Extract all file entries from an apply_patch call with their operation type.
+// Uses +++ b/path for write operations and +++ /dev/null (← --- a/path) for deletions.
+// Does NOT use diff --git headers — they include both source and dest paths and can't
+// distinguish deletions from modifications without parsing the full hunk context.
+export function extractPatchEntries(
+  params: Record<string, unknown>,
+): Array<{ path: string; operation: "write" | "delete" }> {
   const patch =
     typeof params.patch === "string" ? params.patch :
     typeof params.content === "string" ? params.content : null;
 
   if (!patch) return [];
 
-  const paths = new Set<string>();
+  const entries: Array<{ path: string; operation: "write" | "delete" }> = [];
+  const seen = new Set<string>();
+  const lines = patch.split("\n");
 
-  // "+++ b/path" (unified diff)
-  for (const match of patch.matchAll(/^\+\+\+ b\/(.+)$/gm)) {
-    const p = match[1]!.trim();
-    if (p !== "/dev/null") paths.add(p);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+
+    // "+++ b/path" → file written (new or modified)
+    const writeMatch = line.match(/^\+\+\+ b\/(.+)$/);
+    if (writeMatch) {
+      const p = writeMatch[1]!.trim();
+      if (!seen.has(p)) { seen.add(p); entries.push({ path: p, operation: "write" }); }
+      continue;
+    }
+
+    // "+++ /dev/null" → deletion; look back up to 3 lines for "--- a/path"
+    if (/^\+\+\+ \/dev\/null/.test(line)) {
+      for (let j = i - 1; j >= Math.max(0, i - 3); j--) {
+        const deleteMatch = lines[j]!.match(/^--- a\/(.+)$/);
+        if (deleteMatch) {
+          const p = deleteMatch[1]!.trim();
+          if (p !== "/dev/null" && !seen.has(p)) { seen.add(p); entries.push({ path: p, operation: "delete" }); }
+          break;
+        }
+      }
+    }
   }
 
-  // "diff --git a/path b/path" (git format)
-  for (const match of patch.matchAll(/^diff --git a\/.+ b\/(.+)$/gm)) {
-    paths.add(match[1]!.trim());
-  }
+  return entries;
+}
 
-  return [...paths];
+// Keep the old name as an alias for callers that only need paths (used in tests).
+export function extractPatchFilePaths(params: Record<string, unknown>): string[] {
+  return extractPatchEntries(params).map((e) => e.path);
 }
 
 // Returns the redirect target from a shell command, e.g. "echo hi > /tmp/out.ts" → "/tmp/out.ts"

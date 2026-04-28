@@ -4,6 +4,7 @@ import {
   extractFilePath,
   extractBashRedirectTarget,
   extractPatchFilePaths,
+  extractPatchEntries,
   deriveConfidence,
 } from "./after-tool-call.js";
 import type { AccountabilityConfig } from "../config.js";
@@ -163,6 +164,31 @@ describe("createAfterToolCallHandler", () => {
     expect(logger.info).toHaveBeenCalledTimes(2);
   });
 
+  it("emits verified for a deleted file that no longer exists", async () => {
+    vi.mocked(fileExists).mockReturnValue(false); // file is gone — correct
+    const patch = `--- a/src/old.ts\n+++ /dev/null\n`;
+    const handler = createAfterToolCallHandler(defaultConfig, logger);
+    await handler(
+      { toolName: "apply_patch", params: { patch }, runId: "r1" },
+      { ...baseCtx, toolName: "apply_patch" },
+    );
+    expect(logger.info).toHaveBeenCalledOnce();
+    const logged = parseLog(logger.info.mock.calls[0]![0]);
+    expect(logged.confidence).toBe("verified");
+    expect(logged.operation).toBe("delete");
+  });
+
+  it("emits refuted for a deleted file that still exists", async () => {
+    vi.mocked(fileExists).mockReturnValue(true); // file still there — deletion failed?
+    const patch = `--- a/src/old.ts\n+++ /dev/null\n`;
+    const handler = createAfterToolCallHandler(defaultConfig, logger);
+    await handler(
+      { toolName: "apply_patch", params: { patch }, runId: "r1" },
+      { ...baseCtx, toolName: "apply_patch" },
+    );
+    expect(parseLog(logger.info.mock.calls[0]![0]).confidence).toBe("refuted");
+  });
+
   it("does not log for apply_patch with no parseable paths", async () => {
     const handler = createAfterToolCallHandler(defaultConfig, logger);
     await handler(
@@ -270,7 +296,55 @@ describe("extractFilePath", () => {
   });
 });
 
-// --- extractPatchFilePaths ---
+// --- extractPatchEntries ---
+
+describe("extractPatchEntries", () => {
+  it("marks +++ b/ files as write", () => {
+    const patch = `--- a/src/foo.ts\n+++ b/src/foo.ts\n`;
+    const entries = extractPatchEntries({ patch });
+    expect(entries).toEqual([{ path: "src/foo.ts", operation: "write" }]);
+  });
+
+  it("marks +++ /dev/null files as delete, resolving path from --- a/ line", () => {
+    const patch = `--- a/src/deleted.ts\n+++ /dev/null\n`;
+    const entries = extractPatchEntries({ patch });
+    expect(entries).toEqual([{ path: "src/deleted.ts", operation: "delete" }]);
+  });
+
+  it("handles mixed write and delete in one patch", () => {
+    const patch = [
+      "--- a/src/old.ts",
+      "+++ /dev/null",
+      "--- a/src/new.ts",
+      "+++ b/src/new.ts",
+    ].join("\n");
+    const entries = extractPatchEntries({ patch });
+    expect(entries).toContainEqual({ path: "src/old.ts", operation: "delete" });
+    expect(entries).toContainEqual({ path: "src/new.ts", operation: "write" });
+  });
+
+  it("does not produce a write entry for +++ /dev/null", () => {
+    const patch = `--- a/src/gone.ts\n+++ /dev/null\n`;
+    const entries = extractPatchEntries({ patch });
+    expect(entries.some((e) => e.operation === "write")).toBe(false);
+  });
+
+  it("falls back to params.content when params.patch absent", () => {
+    const patch = `+++ b/src/foo.ts\n`;
+    expect(extractPatchEntries({ content: patch })).toEqual([{ path: "src/foo.ts", operation: "write" }]);
+  });
+
+  it("returns empty array when no patch params", () => {
+    expect(extractPatchEntries({ command: "something" })).toEqual([]);
+  });
+
+  it("deduplicates repeated paths", () => {
+    const patch = `+++ b/src/foo.ts\n+++ b/src/foo.ts\n`;
+    expect(extractPatchEntries({ patch })).toHaveLength(1);
+  });
+});
+
+// --- extractPatchFilePaths (alias) ---
 
 describe("extractPatchFilePaths", () => {
   it("extracts paths from +++ b/ lines", () => {
@@ -278,27 +352,14 @@ describe("extractPatchFilePaths", () => {
     expect(extractPatchFilePaths({ patch })).toEqual(["src/foo.ts", "src/bar.ts"]);
   });
 
-  it("extracts paths from diff --git lines", () => {
-    const patch = `diff --git a/src/foo.ts b/src/foo.ts\ndiff --git a/src/bar.ts b/src/bar.ts\n`;
-    expect(extractPatchFilePaths({ patch })).toEqual(["src/foo.ts", "src/bar.ts"]);
-  });
-
-  it("deduplicates paths appearing in both formats", () => {
+  it("does NOT include diff --git lines as separate entries", () => {
+    // diff --git headers caused false refuted for deletions in v0.1.2
     const patch = `diff --git a/src/foo.ts b/src/foo.ts\n+++ b/src/foo.ts\n`;
     expect(extractPatchFilePaths({ patch })).toEqual(["src/foo.ts"]);
   });
 
-  it("excludes /dev/null", () => {
-    const patch = `+++ b/dev/null\n+++ b/src/real.ts\n`;
-    // /dev/null check is on path starting with /dev/null
-    const paths = extractPatchFilePaths({ patch });
-    expect(paths).not.toContain("/dev/null");
-    expect(paths).toContain("src/real.ts");
-  });
-
   it("falls back to params.content when params.patch absent", () => {
-    const patch = `+++ b/src/foo.ts\n`;
-    expect(extractPatchFilePaths({ content: patch })).toEqual(["src/foo.ts"]);
+    expect(extractPatchFilePaths({ content: `+++ b/src/foo.ts\n` })).toEqual(["src/foo.ts"]);
   });
 
   it("returns empty array when no patch params", () => {

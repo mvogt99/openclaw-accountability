@@ -1,6 +1,6 @@
 {
   "name": "openclaw-accountability",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Post-hoc claim verification for OpenClaw agents — checks that files written by the agent exist, parse cleanly, and resolve their local imports.",
   "type": "module",
   "exports": {
