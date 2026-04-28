@@ -1,0 +1,15 @@
+{
+  "id": "openclaw-accountability",
+  "name": "Accountability Verification",
+  "description": "Post-hoc claim verification: checks that files written by the agent exist, parse without syntax errors, and resolve their local imports. Updates openclaw-ftal confidence states when P1 is installed.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "watchedTools": { "type": "array", "items": { "type": "string" } },
+      "watchBash": { "type": "boolean" },
+      "syntaxCheck": { "type": "boolean" },
+      "importCheck": { "type": "boolean" }
+    }
+  }
+}

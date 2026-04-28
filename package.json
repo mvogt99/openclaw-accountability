@@ -1,0 +1,40 @@
+{
+  "name": "openclaw-accountability",
+  "version": "0.1.0",
+  "description": "Post-hoc claim verification for OpenClaw agents — checks that files written by the agent exist, parse cleanly, and resolve their local imports.",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "zod": "^3.25.76"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.4.0",
+    "typescript": ">=5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "typescript": { "optional": true },
+    "openclaw-ftal": { "optional": true }
+  },
+  "optionalPeerDependencies": {
+    "openclaw-ftal": ">=0.2.0"
+  },
+  "devDependencies": {
+    "openclaw": "*",
+    "typescript": "^5.0.0",
+    "vitest": "^1.0.0"
+  },
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "compat": {
+      "pluginApi": ">=2026.4.0"
+    },
+    "build": {
+      "openclawVersion": "2026.4.23"
+    },
+    "release": {
+      "publishToClawHub": true
+    }
+  }
+}
