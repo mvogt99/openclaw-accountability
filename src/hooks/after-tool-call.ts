@@ -165,18 +165,69 @@ function verifyDeletion(
 }
 
 // Extract all file entries from an apply_patch call with their operation type.
-// Uses +++ b/path for write operations and +++ /dev/null (← --- a/path) for deletions.
-// Does NOT use diff --git headers — they include both source and dest paths and can't
-// distinguish deletions from modifications without parsing the full hunk context.
+//
+// Tries two formats in order:
+// 1. OpenClaw native (params.input): *** Add/Update/Delete File: path markers
+// 2. Unified diff fallback (params.patch or params.content): +++ b/path and +++ /dev/null
+//
+// The unified diff parser does NOT use diff --git headers — those can't distinguish
+// deletions from modifications without full hunk context.
 export function extractPatchEntries(
   params: Record<string, unknown>,
 ): Array<{ path: string; operation: "write" | "delete" }> {
+  // OpenClaw native format
+  if (typeof params.input === "string") {
+    const entries = parseOpenClawPatchMarkers(params.input);
+    if (entries.length > 0) return entries;
+  }
+
+  // Unified diff fallback (other harnesses, git patches)
   const patch =
     typeof params.patch === "string" ? params.patch :
     typeof params.content === "string" ? params.content : null;
 
   if (!patch) return [];
+  return parseUnifiedDiff(patch);
+}
 
+// Parses the OpenClaw native apply_patch marker format:
+//   *** Begin Patch
+//   *** Add File: foo.ts
+//   *** Update File: bar.ts
+//   *** Delete File: baz.ts
+//   *** End Patch
+export function parseOpenClawPatchMarkers(
+  input: string,
+): Array<{ path: string; operation: "write" | "delete" }> {
+  const entries: Array<{ path: string; operation: "write" | "delete" }> = [];
+  const seen = new Set<string>();
+
+  for (const line of input.split("\n")) {
+    const addMatch = line.match(/^\*\*\* Add File:\s*(.+)$/);
+    if (addMatch) {
+      const p = addMatch[1]!.trim();
+      if (!seen.has(p)) { seen.add(p); entries.push({ path: p, operation: "write" }); }
+      continue;
+    }
+    const updateMatch = line.match(/^\*\*\* Update File:\s*(.+)$/);
+    if (updateMatch) {
+      const p = updateMatch[1]!.trim();
+      if (!seen.has(p)) { seen.add(p); entries.push({ path: p, operation: "write" }); }
+      continue;
+    }
+    const deleteMatch = line.match(/^\*\*\* Delete File:\s*(.+)$/);
+    if (deleteMatch) {
+      const p = deleteMatch[1]!.trim();
+      if (!seen.has(p)) { seen.add(p); entries.push({ path: p, operation: "delete" }); }
+    }
+  }
+
+  return entries;
+}
+
+function parseUnifiedDiff(
+  patch: string,
+): Array<{ path: string; operation: "write" | "delete" }> {
   const entries: Array<{ path: string; operation: "write" | "delete" }> = [];
   const seen = new Set<string>();
   const lines = patch.split("\n");
@@ -184,7 +235,6 @@ export function extractPatchEntries(
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
 
-    // "+++ b/path" → file written (new or modified)
     const writeMatch = line.match(/^\+\+\+ b\/(.+)$/);
     if (writeMatch) {
       const p = writeMatch[1]!.trim();

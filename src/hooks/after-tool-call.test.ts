@@ -5,6 +5,7 @@ import {
   extractBashRedirectTarget,
   extractPatchFilePaths,
   extractPatchEntries,
+  parseOpenClawPatchMarkers,
   deriveConfidence,
 } from "./after-tool-call.js";
 import type { AccountabilityConfig } from "../config.js";
@@ -296,9 +297,65 @@ describe("extractFilePath", () => {
   });
 });
 
+// --- parseOpenClawPatchMarkers ---
+
+describe("parseOpenClawPatchMarkers", () => {
+  const input = [
+    "*** Begin Patch",
+    "*** Add File: foo.ts",
+    "*** Update File: bar.ts",
+    "*** Delete File: baz.ts",
+    "*** End Patch",
+  ].join("\n");
+
+  it("parses Add File as write", () => {
+    expect(parseOpenClawPatchMarkers(input)).toContainEqual({ path: "foo.ts", operation: "write" });
+  });
+
+  it("parses Update File as write", () => {
+    expect(parseOpenClawPatchMarkers(input)).toContainEqual({ path: "bar.ts", operation: "write" });
+  });
+
+  it("parses Delete File as delete", () => {
+    expect(parseOpenClawPatchMarkers(input)).toContainEqual({ path: "baz.ts", operation: "delete" });
+  });
+
+  it("returns all three entries", () => {
+    expect(parseOpenClawPatchMarkers(input)).toHaveLength(3);
+  });
+
+  it("returns empty array for non-marker content", () => {
+    expect(parseOpenClawPatchMarkers("+++ b/foo.ts\n")).toEqual([]);
+  });
+
+  it("deduplicates repeated markers", () => {
+    const dup = "*** Add File: foo.ts\n*** Add File: foo.ts\n";
+    expect(parseOpenClawPatchMarkers(dup)).toHaveLength(1);
+  });
+});
+
 // --- extractPatchEntries ---
 
 describe("extractPatchEntries", () => {
+  it("prefers OpenClaw marker format (params.input) over unified diff", () => {
+    const input = "*** Begin Patch\n*** Add File: native.ts\n*** End Patch";
+    const patch = "+++ b/other.ts\n";
+    // When both present, params.input wins (has markers)
+    const entries = extractPatchEntries({ input, patch });
+    expect(entries).toEqual([{ path: "native.ts", operation: "write" }]);
+  });
+
+  it("falls back to unified diff when params.input has no markers", () => {
+    const entries = extractPatchEntries({ input: "no markers here", patch: "+++ b/fallback.ts\n" });
+    expect(entries).toContainEqual({ path: "fallback.ts", operation: "write" });
+  });
+
+  it("reads params.input for OpenClaw native format", () => {
+    const input = "*** Add File: foo.ts\n*** Delete File: bar.ts\n";
+    const entries = extractPatchEntries({ input });
+    expect(entries).toContainEqual({ path: "foo.ts", operation: "write" });
+    expect(entries).toContainEqual({ path: "bar.ts", operation: "delete" });
+  });
   it("marks +++ b/ files as write", () => {
     const patch = `--- a/src/foo.ts\n+++ b/src/foo.ts\n`;
     const entries = extractPatchEntries({ patch });
